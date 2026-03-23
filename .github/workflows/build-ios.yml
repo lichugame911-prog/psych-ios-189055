@@ -1,0 +1,250 @@
+name: Build Psych Engine 0.7.3 iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-13
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout Psych Engine 0.7.3
+        uses: actions/checkout@v4
+        with:
+          repository: ShadowMario/FNF-PsychEngine
+          ref: '0.7.3'
+
+      - name: Setup Haxe
+        run: |
+          brew install haxe
+          haxe --version
+
+      - name: Cache haxelib
+        uses: actions/cache@v4
+        with:
+          path: ~/haxelib
+          key: haxelib-psych-ios-v1
+          restore-keys: haxelib-psych-ios-
+
+      - name: Install Haxe dependencies
+        run: |
+          haxelib setup ~/haxelib
+          haxelib install hxcpp         4.3.2  --quiet
+          haxelib install lime          8.1.2  --quiet
+          haxelib install openfl        9.3.3  --quiet
+          haxelib install flixel        5.4.0  --quiet
+          haxelib install flixel-addons 3.2.2  --quiet
+          haxelib install flixel-ui     2.5.0  --quiet
+          haxelib install hscript       2.5.0  --quiet
+          haxelib install actuate       1.9.0  --quiet
+          haxelib install SScript       7.0.12 --quiet
+          haxelib install hxCodec       3.0.2  --quiet
+          haxelib run lime setup -y
+
+      - name: Create TouchControls.hx
+        run: |
+          mkdir -p source/mobile
+          cat > source/mobile/TouchControls.hx << 'HAXEOF'
+package mobile;
+import flixel.FlxG;
+class TouchControls {
+    public static var left(default,null):Bool = false;
+    public static var down(default,null):Bool = false;
+    public static var up(default,null):Bool = false;
+    public static var right(default,null):Bool = false;
+    public static var leftP(default,null):Bool = false;
+    public static var downP(default,null):Bool = false;
+    public static var upP(default,null):Bool = false;
+    public static var rightP(default,null):Bool = false;
+    public static var leftR(default,null):Bool = false;
+    public static var downR(default,null):Bool = false;
+    public static var upR(default,null):Bool = false;
+    public static var rightR(default,null):Bool = false;
+    static var _pL:Bool=false; static var _pD:Bool=false;
+    static var _pU:Bool=false; static var _pR:Bool=false;
+    public static function update():Void {
+        _pL=left; _pD=down; _pU=up; _pR=right;
+        left=false; down=false; up=false; right=false;
+        var sw:Float=FlxG.width; var sh:Float=FlxG.height;
+        var zy:Float=sh*0.45; var zw:Float=sw/4;
+        for(touch in FlxG.touches.list) {
+            if(!touch.active) continue;
+            if(touch.y < zy) continue;
+            if(touch.x < zw) left=true;
+            else if(touch.x < zw*2) down=true;
+            else if(touch.x < zw*3) up=true;
+            else right=true;
+        }
+        leftP=left&&!_pL; downP=down&&!_pD;
+        upP=up&&!_pU; rightP=right&&!_pR;
+        leftR=!left&&_pL; downR=!down&&_pD;
+        upR=!up&&_pU; rightR=!right&&_pR;
+    }
+    public static function anyJustPressed():Bool {
+        for(t in FlxG.touches.list) if(t.justPressed) return true;
+        return false;
+    }
+}
+HAXEOF
+
+      - name: Create MobileMenuHelper.hx
+        run: |
+          cat > source/mobile/MobileMenuHelper.hx << 'HAXEOF'
+package mobile;
+import flixel.FlxG;
+class MobileMenuHelper {
+    public static var swipeUp(default,null):Bool=false;
+    public static var swipeDown(default,null):Bool=false;
+    public static var swipeLeft(default,null):Bool=false;
+    public static var swipeRight(default,null):Bool=false;
+    public static var tapped(default,null):Bool=false;
+    static inline var ST:Float=40;
+    static inline var TT:Float=15;
+    static var _sx:Float=0; static var _sy:Float=0;
+    static var _tr:Bool=false;
+    public static function update():Void {
+        swipeUp=false; swipeDown=false;
+        swipeLeft=false; swipeRight=false; tapped=false;
+        for(touch in FlxG.touches.list) {
+            if(touch.justPressed) { _sx=touch.x; _sy=touch.y; _tr=true; }
+            if(touch.justReleased && _tr) {
+                var dx:Float=touch.x-_sx; var dy:Float=touch.y-_sy;
+                var dist:Float=Math.sqrt(dx*dx+dy*dy);
+                if(dist<TT) tapped=true;
+                else if(Math.abs(dy)>Math.abs(dx)) {
+                    if(dy < -ST) swipeUp=true;
+                    else if(dy > ST) swipeDown=true;
+                } else {
+                    if(dx > ST) swipeRight=true;
+                    else if(dx < -ST) swipeLeft=true;
+                }
+                _tr=false;
+            }
+        }
+    }
+}
+HAXEOF
+
+      - name: Patch source files for iOS
+        run: |
+          python3 << 'PYEOF'
+import os, re
+
+# --- Patch Project.xml ---
+with open('Project.xml','r') as f: xml=f.read()
+block="""
+    <ios deployment="14.0">
+        <plist>
+            <key>UIFileSharingEnabled</key><true/>
+            <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+                <string>UIInterfaceOrientationLandscapeLeft</string>
+                <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+            <key>UIRequiresFullScreen</key><true/>
+            <key>UIStatusBarHidden</key><true/>
+        </plist>
+    </ios>"""
+if 'UIFileSharingEnabled' not in xml:
+    xml=xml.replace('</project>',block+'\n</project>')
+    open('Project.xml','w').write(xml)
+    print('Project.xml patched')
+
+# --- Patch Paths.hx ---
+for p in ['source/backend/Paths.hx','source/Paths.hx']:
+    if not os.path.exists(p): continue
+    src=open(p).read()
+    old="inline static public function mods(?key:String = ''):String"
+    new="""inline static public function mods(?key:String = ''):String
+    {
+        #if ios
+        return lime.system.System.documentsDirectory + '/mods/' + key;
+        #else
+        return 'mods/' + key;
+        #end
+    }
+    @:deprecated inline static public function _modsOld(?key:String = ''):String"""
+    if '#if ios' not in src and old in src:
+        open(p,'w').write(src.replace(old,new))
+        print('Paths.hx patched')
+    break
+
+# --- Patch PlayState.hx ---
+ps='source/states/PlayState.hx'
+if os.path.exists(ps):
+    src=open(ps).read()
+    if 'mobile.TouchControls' not in src:
+        src=re.sub(r'^(import )',
+            '#if ios\nimport mobile.TouchControls;\n#end\nimport ',
+            src,count=1,flags=re.MULTILINE)
+    src=re.sub(
+        r'(override\s+function\s+update\s*\(elapsed\s*:\s*Float\)\s*\{)',
+        r'\1\n\t\t#if ios\n\t\tTouchControls.update();\n\t\t#end',
+        src,count=1)
+    for pat,rep in [
+        (r'(controls\.LEFT_P)',  r'(controls.LEFT_P  #if ios || TouchControls.leftP  #end)'),
+        (r'(controls\.DOWN_P)',  r'(controls.DOWN_P  #if ios || TouchControls.downP  #end)'),
+        (r'(controls\.UP_P)',    r'(controls.UP_P    #if ios || TouchControls.upP    #end)'),
+        (r'(controls\.RIGHT_P)', r'(controls.RIGHT_P #if ios || TouchControls.rightP #end)'),
+        (r'(?<!_P\b)(controls\.LEFT)(?!_)',  r'(controls.LEFT  #if ios || TouchControls.left  #end)'),
+        (r'(?<!_P\b)(controls\.DOWN)(?!_)',  r'(controls.DOWN  #if ios || TouchControls.down  #end)'),
+        (r'(?<!_P\b)(controls\.UP)(?!_)',    r'(controls.UP    #if ios || TouchControls.up    #end)'),
+        (r'(?<!_P\b)(controls\.RIGHT)(?!_)', r'(controls.RIGHT #if ios || TouchControls.right #end)'),
+    ]:
+        src=re.sub(pat,rep,src)
+    open(ps,'w').write(src)
+    print('PlayState.hx patched')
+
+# --- Patch menus ---
+IMPORT='#if ios\nimport mobile.MobileMenuHelper;\n#end\n'
+for path in [
+    'source/states/MainMenuState.hx',
+    'source/states/FreeplayState.hx',
+    'source/states/StoryMenuState.hx',
+    'source/states/TitleState.hx',
+    'source/substates/PauseSubState.hx',
+]:
+    if not os.path.exists(path): continue
+    src=open(path).read()
+    if 'MobileMenuHelper' not in src:
+        src=re.sub(r'^(import )',IMPORT+r'import ',src,count=1,flags=re.MULTILINE)
+    src=re.sub(
+        r'(override\s+function\s+update\s*\(elapsed\s*:\s*Float\)\s*\{)',
+        r'\1\n\t\t#if ios\n\t\tMobileMenuHelper.update();\n\t\t#end',
+        src,count=1)
+    for d in ['UP','DOWN','LEFT','RIGHT']:
+        src=re.sub(rf'(controls\.UI_{d}_P)',
+            rf'(controls.UI_{d}_P #if ios || MobileMenuHelper.swipe{d.capitalize()} #end)',src)
+    src=re.sub(r'(controls\.ACCEPT)',r'(\1 #if ios || MobileMenuHelper.tapped #end)',src)
+    src=re.sub(r'(controls\.BACK)', r'(\1 #if ios || MobileMenuHelper.swipeRight #end)',src)
+    open(path,'w').write(src)
+    print('Patched:',path)
+PYEOF
+
+      - name: Build iOS unsigned
+        run: |
+          haxelib run lime build ios -release 2>&1
+
+      - name: Package IPA
+        run: |
+          BUILD_DIR="export/release/ios/build/Release-iphoneos"
+          APP=$(ls "$BUILD_DIR" | grep "\.app$" | head -1)
+          if [ -z "$APP" ]; then
+            echo "No .app found in $BUILD_DIR"
+            ls -la "$BUILD_DIR" || true
+            exit 1
+          fi
+          mkdir -p Payload
+          cp -r "$BUILD_DIR/$APP" Payload/
+          zip -r "PsychEngine-0.7.3-iOS.ipa" Payload/
+          echo "Done: $(du -sh PsychEngine-0.7.3-iOS.ipa | cut -f1)"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PsychEngine-0.7.3-iOS-unsigned
+          path: PsychEngine-0.7.3-iOS.ipa
+          retention-days: 30
